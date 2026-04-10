@@ -2,7 +2,7 @@ import { z } from "zod";
 import { COOKIE_NAME } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
-import { publicProcedure, protectedProcedure, router } from "./_core/trpc";
+import { publicProcedure, router } from "./_core/trpc";
 import { invokeLLM, type MessageContent } from "./_core/llm";
 import { storagePut } from "./storage";
 import {
@@ -16,19 +16,25 @@ import {
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
+export interface OrderItem {
+  seq: number;
+  itemNo: string;   // 貨號（內部品號）
+  barcode: string;  // 國際條碼
+  itemName: string;
+  quantity: number;
+}
+
 export interface OrderData {
   orderNo: string;
   storeName: string;
-  items: Array<{
-    seq: number;
-    barcode: string;
-    itemName: string;
-    quantity: number;
-  }>;
+  items: OrderItem[];
 }
 
 export interface ItemComparisonResult {
+  matchKey: string;       // 比對鍵（條碼優先，無條碼則用貨號）
+  matchKeyType: "barcode" | "itemNo";  // 比對依據
   barcode: string;
+  itemNo: string;
   itemName: string;
   purchaseQty: number | null;
   shipmentQty: number | null;
@@ -53,8 +59,8 @@ export interface ComparisonSummary {
 
 async function extractOrderFromImage(imageUrl: string, orderType: "purchase" | "shipment"): Promise<OrderData> {
   const systemPrompt = orderType === "purchase"
-    ? `你是一個專業的採購單 OCR 解析助手。請從圖片中擷取採購單資訊，包含：採購單編號、門市名稱、以及所有品項（條碼、品項名稱、數量）。`
-    : `你是一個專業的出貨單 OCR 解析助手。請從圖片中擷取出貨單資訊，包含：銷貨單號、客戶名稱、以及所有品項（國際條碼、品名規格、數量）。`;
+    ? `你是一個專業的採購單 OCR 解析助手。請從圖片中擷取採購單資訊，包含：採購單編號、門市名稱、以及所有品項（貨號、條碼、品項名稱、數量）。`
+    : `你是一個專業的出貨單 OCR 解析助手。請從圖片中擷取出貨單資訊，包含：銷貨單號、客戶名稱、以及所有品項（貨號、國際條碼、品名規格、數量）。`;
 
   const response = await invokeLLM({
     messages: [
@@ -76,14 +82,17 @@ async function extractOrderFromImage(imageUrl: string, orderType: "purchase" | "
   "items": [
     {
       "seq": 序號(數字),
-      "barcode": "條碼",
+      "itemNo": "貨號（如 GPSS-0351，若無則填空字串）",
+      "barcode": "國際條碼（通常為13位數字，若無則填空字串）",
       "itemName": "品項名稱",
       "quantity": 數量(數字)
     }
   ]
 }
 注意：
-- 條碼請完整擷取，通常為13位數字
+- 貨號（itemNo）通常出現在表格的「貨號」或「貨號」欄位，格式如 GPSS-0351
+- 條碼（barcode）通常為13位數字，出現在「國際條碼」欄位
+- 若某欄位圖片中不存在，請填入空字串 ""
 - 數量請擷取純數字
 - 如有贈品或金額為0的品項（如紙卡類），仍需列入
 - 只回傳 JSON，不要加任何說明文字`,
@@ -107,11 +116,12 @@ async function extractOrderFromImage(imageUrl: string, orderType: "purchase" | "
                 type: "object",
                 properties: {
                   seq: { type: "number" },
+                  itemNo: { type: "string" },
                   barcode: { type: "string" },
                   itemName: { type: "string" },
                   quantity: { type: "number" },
                 },
-                required: ["seq", "barcode", "itemName", "quantity"],
+                required: ["seq", "itemNo", "barcode", "itemName", "quantity"],
                 additionalProperties: false,
               },
             },
@@ -138,13 +148,23 @@ async function extractOrderFromImage(imageUrl: string, orderType: "purchase" | "
 
 // ─── Comparison Logic ─────────────────────────────────────────────────────────
 
+/**
+ * 取得品項的比對鍵：優先使用條碼，無條碼時改用貨號
+ */
+function getMatchKey(item: OrderItem): { key: string; type: "barcode" | "itemNo" } | null {
+  const barcode = item.barcode?.trim();
+  if (barcode) return { key: barcode, type: "barcode" };
+  const itemNo = item.itemNo?.trim();
+  if (itemNo) return { key: itemNo, type: "itemNo" };
+  return null;
+}
+
 function compareOrders(purchase: OrderData, shipment: OrderData): ComparisonSummary {
   // 比對門市名稱
   const pStore = purchase.storeName?.trim() ?? "";
   const sStore = shipment.storeName?.trim() ?? "";
   let storeNameMatch: "match" | "mismatch" | "missing" = "missing";
   if (pStore && sStore) {
-    // 模糊比對：判斷是否包含相同的核心門市名稱
     const normalize = (s: string) => s.replace(/[^a-zA-Z0-9\u4e00-\u9fa5]/g, "").toLowerCase();
     const pNorm = normalize(pStore);
     const sNorm = normalize(sStore);
@@ -153,28 +173,36 @@ function compareOrders(purchase: OrderData, shipment: OrderData): ComparisonSumm
       : "mismatch";
   }
 
-  // 建立條碼索引
-  const purchaseMap = new Map<string, typeof purchase.items[0]>();
-  const shipmentMap = new Map<string, typeof shipment.items[0]>();
+  // 建立比對索引（條碼優先，無條碼用貨號）
+  const purchaseMap = new Map<string, { item: OrderItem; keyType: "barcode" | "itemNo" }>();
+  const shipmentMap = new Map<string, { item: OrderItem; keyType: "barcode" | "itemNo" }>();
 
   for (const item of purchase.items) {
-    if (item.barcode) purchaseMap.set(item.barcode.trim(), item);
+    const mk = getMatchKey(item);
+    if (mk) purchaseMap.set(mk.key, { item, keyType: mk.type });
   }
   for (const item of shipment.items) {
-    if (item.barcode) shipmentMap.set(item.barcode.trim(), item);
+    const mk = getMatchKey(item);
+    if (mk) shipmentMap.set(mk.key, { item, keyType: mk.type });
   }
 
-  const allBarcodes = new Set([...Array.from(purchaseMap.keys()), ...Array.from(shipmentMap.keys())]);
+  const allKeys = new Set([...Array.from(purchaseMap.keys()), ...Array.from(shipmentMap.keys())]);
   const itemResults: ItemComparisonResult[] = [];
 
-  for (const barcode of Array.from(allBarcodes)) {
-    const pItem = purchaseMap.get(barcode);
-    const sItem = shipmentMap.get(barcode);
+  for (const key of Array.from(allKeys)) {
+    const pEntry = purchaseMap.get(key);
+    const sEntry = shipmentMap.get(key);
+    const keyType = pEntry?.keyType ?? sEntry?.keyType ?? "barcode";
 
-    if (pItem && sItem) {
+    if (pEntry && sEntry) {
+      const pItem = pEntry.item;
+      const sItem = sEntry.item;
       const qtyMatch = pItem.quantity === sItem.quantity;
       itemResults.push({
-        barcode,
+        matchKey: key,
+        matchKeyType: keyType,
+        barcode: pItem.barcode || sItem.barcode,
+        itemNo: pItem.itemNo || sItem.itemNo,
         itemName: pItem.itemName || sItem.itemName,
         purchaseQty: pItem.quantity,
         shipmentQty: sItem.quantity,
@@ -182,9 +210,13 @@ function compareOrders(purchase: OrderData, shipment: OrderData): ComparisonSumm
         diffNote: qtyMatch ? "" : `採購數量 ${pItem.quantity}，出貨數量 ${sItem.quantity}`,
         source: "both",
       });
-    } else if (pItem && !sItem) {
+    } else if (pEntry && !sEntry) {
+      const pItem = pEntry.item;
       itemResults.push({
-        barcode,
+        matchKey: key,
+        matchKeyType: keyType,
+        barcode: pItem.barcode,
+        itemNo: pItem.itemNo,
         itemName: pItem.itemName,
         purchaseQty: pItem.quantity,
         shipmentQty: null,
@@ -192,9 +224,13 @@ function compareOrders(purchase: OrderData, shipment: OrderData): ComparisonSumm
         diffNote: "出貨單缺少此品項",
         source: "purchase_only",
       });
-    } else if (!pItem && sItem) {
+    } else if (!pEntry && sEntry) {
+      const sItem = sEntry.item;
       itemResults.push({
-        barcode,
+        matchKey: key,
+        matchKeyType: keyType,
+        barcode: sItem.barcode,
+        itemNo: sItem.itemNo,
         itemName: sItem.itemName,
         purchaseQty: null,
         shipmentQty: sItem.quantity,
@@ -205,10 +241,10 @@ function compareOrders(purchase: OrderData, shipment: OrderData): ComparisonSumm
     }
   }
 
-  // 排序：先顯示有條碼的、再依序號排列
+  // 排序：依採購單序號排列
   itemResults.sort((a, b) => {
-    const aSeq = purchase.items.find(i => i.barcode === a.barcode)?.seq ?? 999;
-    const bSeq = purchase.items.find(i => i.barcode === b.barcode)?.seq ?? 999;
+    const aSeq = purchase.items.find(i => getMatchKey(i)?.key === a.matchKey)?.seq ?? 999;
+    const bSeq = purchase.items.find(i => getMatchKey(i)?.key === b.matchKey)?.seq ?? 999;
     return aSeq - bSeq;
   });
 
@@ -238,7 +274,8 @@ function compareOrders(purchase: OrderData, shipment: OrderData): ComparisonSumm
 
 const OrderItemSchema = z.object({
   seq: z.number(),
-  barcode: z.string(),
+  itemNo: z.string().default(""),
+  barcode: z.string().default(""),
   itemName: z.string(),
   quantity: z.number(),
 });
@@ -273,13 +310,10 @@ export const appRouter = router({
         orderType: z.enum(["purchase", "shipment"]),
       }))
       .mutation(async ({ input }) => {
-        // 將 base64 轉換為 Buffer 並上傳至 S3
         const buffer = Buffer.from(input.imageBase64, "base64");
         const ext = input.mimeType.includes("png") ? "png" : "jpg";
         const fileKey = `orders/${input.orderType}-${Date.now()}.${ext}`;
         const { url } = await storagePut(fileKey, buffer, input.mimeType);
-
-        // 呼叫 OCR
         const orderData = await extractOrderFromImage(url, input.orderType);
         return { orderData, imageUrl: url };
       }),
@@ -297,7 +331,6 @@ export const appRouter = router({
       .mutation(async ({ input }) => {
         const summary = compareOrders(input.purchaseData, input.shipmentData);
 
-        // 儲存主紀錄
         const recordId = await createComparisonRecord({
           purchaseOrderNo: input.purchaseData.orderNo,
           shipmentOrderNo: input.shipmentData.orderNo,
@@ -317,11 +350,12 @@ export const appRouter = router({
           comparisonId: recordId,
           source: "purchase" as const,
           seq: item.seq,
-          barcode: item.barcode,
+          itemNo: item.itemNo || null,
+          barcode: item.barcode || null,
           itemName: item.itemName,
           quantity: item.quantity,
-          matchStatus: summary.items.find(r => r.barcode === item.barcode)?.status ?? "missing",
-          diffNote: summary.items.find(r => r.barcode === item.barcode)?.diffNote ?? "",
+          matchStatus: summary.items.find(r => r.matchKey === (item.barcode?.trim() || item.itemNo?.trim()))?.status ?? "missing",
+          diffNote: summary.items.find(r => r.matchKey === (item.barcode?.trim() || item.itemNo?.trim()))?.diffNote ?? "",
         }));
 
         // 儲存出貨單品項
@@ -329,11 +363,12 @@ export const appRouter = router({
           comparisonId: recordId,
           source: "shipment" as const,
           seq: item.seq,
-          barcode: item.barcode,
+          itemNo: item.itemNo || null,
+          barcode: item.barcode || null,
           itemName: item.itemName,
           quantity: item.quantity,
-          matchStatus: summary.items.find(r => r.barcode === item.barcode)?.status ?? "missing",
-          diffNote: summary.items.find(r => r.barcode === item.barcode)?.diffNote ?? "",
+          matchStatus: summary.items.find(r => r.matchKey === (item.barcode?.trim() || item.itemNo?.trim()))?.status ?? "missing",
+          diffNote: summary.items.find(r => r.matchKey === (item.barcode?.trim() || item.itemNo?.trim()))?.diffNote ?? "",
         }));
 
         await createOrderItems([...purchaseItems, ...shipmentItems]);

@@ -15,6 +15,13 @@
       "when": 1775717187519,
       "tag": "0001_cultured_exiles",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1775792796553,
+      "tag": "0002_large_mole_man",
+      "breakpoints": true
     }
   ]
 }

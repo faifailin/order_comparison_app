@@ -69,6 +69,8 @@ export const orderItems = mysqlTable("order_items", {
   source: mysqlEnum("source", ["purchase", "shipment"]).notNull(),
   /** 序號 */
   seq: int("seq"),
+  /** 貨號（內部品號） */
+  itemNo: varchar("itemNo", { length: 64 }),
   /** 國際條碼 */
   barcode: varchar("barcode", { length: 64 }),
   /** 品項名稱 */

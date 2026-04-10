@@ -3,7 +3,7 @@ import { useLocation, useParams } from "wouter";
 import { Button } from "@/components/ui/button";
 import {
   CheckCircle2, AlertTriangle, XCircle, ArrowLeft,
-  Calendar, Hash, Store, Image as ImageIcon, ClipboardList
+  Calendar, Hash, Store, Image as ImageIcon, ClipboardList, Tag
 } from "lucide-react";
 
 interface ComparisonSummary {
@@ -11,7 +11,10 @@ interface ComparisonSummary {
   purchaseStoreName: string;
   shipmentCustomerName: string;
   items: Array<{
+    matchKey: string;
+    matchKeyType: "barcode" | "itemNo";
     barcode: string;
+    itemNo: string;
     itemName: string;
     purchaseQty: number | null;
     shipmentQty: number | null;
@@ -231,7 +234,8 @@ export default function ComparisonDetail() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-border bg-muted/30">
-                  <th className="text-left px-5 py-3 text-xs font-medium text-muted-foreground">條碼</th>
+                  <th className="text-left px-5 py-3 text-xs font-medium text-muted-foreground">貨號</th>
+                  <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground">條碼</th>
                   <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground">品項名稱</th>
                   <th className="text-center px-4 py-3 text-xs font-medium text-muted-foreground">採購數量</th>
                   <th className="text-center px-4 py-3 text-xs font-medium text-muted-foreground">出貨數量</th>
@@ -248,7 +252,25 @@ export default function ComparisonDetail() {
                       ${item.status === "missing" ? "bg-red-500/5" : ""}
                     `}
                   >
-                    <td className="px-5 py-3.5 font-mono text-xs text-muted-foreground">{item.barcode}</td>
+                    <td className="px-5 py-3.5 font-mono text-xs">
+                      {item.itemNo ? (
+                        <span className={item.matchKeyType === "itemNo"
+                          ? "text-amber-300 inline-flex items-center gap-1"
+                          : "text-muted-foreground"}>
+                          {item.matchKeyType === "itemNo" && <Tag className="h-2.5 w-2.5" />}
+                          {item.itemNo}
+                        </span>
+                      ) : <span className="text-muted-foreground/30">—</span>}
+                    </td>
+                    <td className="px-4 py-3.5 font-mono text-xs">
+                      {item.barcode ? (
+                        <span className={item.matchKeyType === "barcode"
+                          ? "text-primary/80"
+                          : "text-muted-foreground"}>
+                          {item.barcode}
+                        </span>
+                      ) : <span className="text-muted-foreground/30">—</span>}
+                    </td>
                     <td className="px-4 py-3.5 text-xs text-foreground max-w-48">
                       <span className="line-clamp-2">{item.itemName}</span>
                     </td>

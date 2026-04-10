@@ -8,158 +8,219 @@ function createMockContext(): TrpcContext {
   return {
     user: null,
     req: { protocol: "https", headers: {} } as TrpcContext["req"],
-    res: {
-      clearCookie: () => {},
-    } as TrpcContext["res"],
+    res: { clearCookie: () => {} } as TrpcContext["res"],
   };
 }
 
-// ─── Compare logic tests (pure function, tested via router) ───────────────────
+// ─── Pure comparison logic (replicated from routers.ts for unit testing) ──────
 
-describe("comparison logic (compareOrders)", () => {
-  /**
-   * We test the compare mutation's logic by calling it directly.
-   * Since it requires DB, we test the pure comparison logic extracted here.
-   */
+function getMatchKey(item: { barcode: string; itemNo: string }): { key: string; type: "barcode" | "itemNo" } | null {
+  const barcode = item.barcode?.trim();
+  if (barcode) return { key: barcode, type: "barcode" };
+  const itemNo = item.itemNo?.trim();
+  if (itemNo) return { key: itemNo, type: "itemNo" };
+  return null;
+}
 
-  // Inline the comparison function for unit testing
-  function compareOrders(
-    purchase: { storeName: string; items: Array<{ seq: number; barcode: string; itemName: string; quantity: number }> },
-    shipment: { storeName: string; items: Array<{ seq: number; barcode: string; itemName: string; quantity: number }> }
-  ) {
-    const pStore = purchase.storeName?.trim() ?? "";
-    const sStore = shipment.storeName?.trim() ?? "";
-    let storeNameMatch: "match" | "mismatch" | "missing" = "missing";
-    if (pStore && sStore) {
-      const normalize = (s: string) => s.replace(/[^a-zA-Z0-9\u4e00-\u9fa5]/g, "").toLowerCase();
-      const pNorm = normalize(pStore);
-      const sNorm = normalize(sStore);
-      storeNameMatch = (pNorm === sNorm || sNorm.includes(pNorm) || pNorm.includes(sNorm))
-        ? "match" : "mismatch";
-    }
+type TestItem = { seq: number; itemNo: string; barcode: string; itemName: string; quantity: number };
+type TestOrder = { storeName: string; items: TestItem[] };
 
-    const purchaseMap = new Map(purchase.items.filter(i => i.barcode).map(i => [i.barcode.trim(), i]));
-    const shipmentMap = new Map(shipment.items.filter(i => i.barcode).map(i => [i.barcode.trim(), i]));
-    const allBarcodes = new Set([...Array.from(purchaseMap.keys()), ...Array.from(shipmentMap.keys())]);
-
-    const items = Array.from(allBarcodes).map(barcode => {
-      const pItem = purchaseMap.get(barcode);
-      const sItem = shipmentMap.get(barcode);
-      if (pItem && sItem) {
-        const qtyMatch = pItem.quantity === sItem.quantity;
-        return { barcode, status: qtyMatch ? "match" : "mismatch", purchaseQty: pItem.quantity, shipmentQty: sItem.quantity };
-      } else if (pItem) {
-        return { barcode, status: "missing", purchaseQty: pItem.quantity, shipmentQty: null };
-      } else {
-        return { barcode, status: "missing", purchaseQty: null, shipmentQty: sItem!.quantity };
-      }
-    });
-
-    const matchCount = items.filter(i => i.status === "match").length;
-    const mismatchCount = items.filter(i => i.status === "mismatch").length;
-    const missingCount = items.filter(i => i.status === "missing").length;
-    const overallStatus = storeNameMatch === "match" && mismatchCount === 0 && missingCount === 0
-      ? "all_match" : "has_diff";
-
-    return { storeNameMatch, items, overallStatus, matchCount, mismatchCount, missingCount };
+function compareOrders(purchase: TestOrder, shipment: TestOrder) {
+  const pStore = purchase.storeName?.trim() ?? "";
+  const sStore = shipment.storeName?.trim() ?? "";
+  let storeNameMatch: "match" | "mismatch" | "missing" = "missing";
+  if (pStore && sStore) {
+    const normalize = (s: string) => s.replace(/[^a-zA-Z0-9\u4e00-\u9fa5]/g, "").toLowerCase();
+    const pNorm = normalize(pStore);
+    const sNorm = normalize(sStore);
+    storeNameMatch = (pNorm === sNorm || sNorm.includes(pNorm) || pNorm.includes(sNorm)) ? "match" : "mismatch";
   }
 
-  it("should return all_match when store names and all items match", () => {
-    const purchase = {
-      storeName: "內湖東湖店", // normalized: 內湖東湖店
-      items: [
-        { seq: 1, barcode: "8809398924774", itemName: "GIO 枕頭 M", quantity: 1 },
-        { seq: 2, barcode: "8809398927089", itemName: "GIO 床墊 XS", quantity: 2 },
-      ],
-    };
-    const shipment = {
-      storeName: "卡多摩內湖東湖店", // normalized: 卡多摩內湖東湖店 - includes '內湖東湖店'
-      items: [
-        { seq: 1, barcode: "8809398924774", itemName: "GIO 枕頭 M", quantity: 1 },
-        { seq: 2, barcode: "8809398927089", itemName: "GIO 床墊 XS", quantity: 2 },
-      ],
-    };
-    const result = compareOrders(purchase, shipment);
+  const purchaseMap = new Map<string, { item: TestItem; keyType: "barcode" | "itemNo" }>();
+  const shipmentMap = new Map<string, { item: TestItem; keyType: "barcode" | "itemNo" }>();
+  for (const item of purchase.items) {
+    const mk = getMatchKey(item);
+    if (mk) purchaseMap.set(mk.key, { item, keyType: mk.type });
+  }
+  for (const item of shipment.items) {
+    const mk = getMatchKey(item);
+    if (mk) shipmentMap.set(mk.key, { item, keyType: mk.type });
+  }
+
+  const allKeys = new Set([...Array.from(purchaseMap.keys()), ...Array.from(shipmentMap.keys())]);
+  const items: Array<{
+    matchKey: string; matchKeyType: "barcode" | "itemNo";
+    status: "match" | "mismatch" | "missing";
+    purchaseQty: number | null; shipmentQty: number | null;
+    source?: "purchase_only" | "shipment_only" | "both";
+  }> = [];
+
+  for (const key of Array.from(allKeys)) {
+    const pEntry = purchaseMap.get(key);
+    const sEntry = shipmentMap.get(key);
+    const keyType = pEntry?.keyType ?? sEntry?.keyType ?? "barcode";
+    if (pEntry && sEntry) {
+      const qtyMatch = pEntry.item.quantity === sEntry.item.quantity;
+      items.push({ matchKey: key, matchKeyType: keyType, status: qtyMatch ? "match" : "mismatch",
+        purchaseQty: pEntry.item.quantity, shipmentQty: sEntry.item.quantity, source: "both" });
+    } else if (pEntry) {
+      items.push({ matchKey: key, matchKeyType: keyType, status: "missing",
+        purchaseQty: pEntry.item.quantity, shipmentQty: null, source: "purchase_only" });
+    } else if (sEntry) {
+      items.push({ matchKey: key, matchKeyType: keyType, status: "missing",
+        purchaseQty: null, shipmentQty: sEntry.item.quantity, source: "shipment_only" });
+    }
+  }
+
+  const matchCount = items.filter(i => i.status === "match").length;
+  const mismatchCount = items.filter(i => i.status === "mismatch").length;
+  const missingCount = items.filter(i => i.status === "missing").length;
+  const overallStatus = storeNameMatch === "match" && mismatchCount === 0 && missingCount === 0 ? "all_match" : "has_diff";
+
+  return { storeNameMatch, items, overallStatus, matchCount, mismatchCount, missingCount };
+}
+
+// ─── Store name comparison tests ──────────────────────────────────────────────
+
+describe("compareOrders - store name", () => {
+  it("matches when store names are identical", () => {
+    const result = compareOrders(
+      { storeName: "內湖東湖店", items: [] },
+      { storeName: "內湖東湖店", items: [] }
+    );
     expect(result.storeNameMatch).toBe("match");
-    expect(result.matchCount).toBe(2);
-    expect(result.mismatchCount).toBe(0);
-    expect(result.missingCount).toBe(0);
     expect(result.overallStatus).toBe("all_match");
   });
 
-  it("should detect quantity mismatch", () => {
-    const purchase = {
-      storeName: "K041 台北中華店",
-      items: [{ seq: 1, barcode: "8809398925368", itemName: "GIO 枕頭 S", quantity: 2 }],
-    };
-    const shipment = {
-      storeName: "卡多摩台北中華店",
-      items: [{ seq: 1, barcode: "8809398925368", itemName: "GIO 枕頭 S", quantity: 1 }],
-    };
-    const result = compareOrders(purchase, shipment);
-    expect(result.overallStatus).toBe("has_diff");
-    expect(result.mismatchCount).toBe(1);
-    expect(result.items[0]?.status).toBe("mismatch");
-  });
-
-  it("should detect missing item in shipment", () => {
-    const purchase = {
-      storeName: "K041 台北中華店",
-      items: [
-        { seq: 1, barcode: "8809398925368", itemName: "GIO 枕頭 S", quantity: 1 },
-        { seq: 2, barcode: "8809398924866", itemName: "GIO 涼墊", quantity: 1 },
-      ],
-    };
-    const shipment = {
-      storeName: "卡多摩台北中華店",
-      items: [
-        { seq: 1, barcode: "8809398925368", itemName: "GIO 枕頭 S", quantity: 1 },
-      ],
-    };
-    const result = compareOrders(purchase, shipment);
-    expect(result.missingCount).toBe(1);
-    expect(result.overallStatus).toBe("has_diff");
-  });
-
-  it("should detect store name mismatch", () => {
-    const purchase = {
-      storeName: "K050 內湖東湖店",
-      items: [{ seq: 1, barcode: "8809398924774", itemName: "GIO 枕頭", quantity: 1 }],
-    };
-    const shipment = {
-      storeName: "台北中華店",
-      items: [{ seq: 1, barcode: "8809398924774", itemName: "GIO 枕頭", quantity: 1 }],
-    };
-    const result = compareOrders(purchase, shipment);
-    expect(result.storeNameMatch).toBe("mismatch");
-    expect(result.overallStatus).toBe("has_diff");
-  });
-
-  it("should handle empty items gracefully", () => {
-    // Use identical store names to ensure match
-    const purchase = { storeName: "內湖東湖店", items: [] };
-    const shipment = { storeName: "內湖東湖店", items: [] };
-    const result = compareOrders(purchase, shipment);
+  it("matches when shipment name contains purchase name (abbreviated)", () => {
+    const result = compareOrders(
+      { storeName: "內湖東湖店", items: [] },
+      { storeName: "台灣卡多摩嬰童館-卡多摩內湖東湖店", items: [] }
+    );
     expect(result.storeNameMatch).toBe("match");
+  });
+
+  it("mismatches when store names are different", () => {
+    const result = compareOrders(
+      { storeName: "台北中華店", items: [] },
+      { storeName: "內湖東湖店", items: [] }
+    );
+    expect(result.storeNameMatch).toBe("mismatch");
+  });
+
+  it("returns missing when either store name is empty", () => {
+    const result = compareOrders(
+      { storeName: "", items: [] },
+      { storeName: "內湖東湖店", items: [] }
+    );
+    expect(result.storeNameMatch).toBe("missing");
+  });
+});
+
+// ─── Barcode-based comparison tests ──────────────────────────────────────────
+
+describe("compareOrders - barcode matching", () => {
+  it("matches items with same barcode and same quantity", () => {
+    const item: TestItem = { seq: 1, itemNo: "GPSS-0351", barcode: "8809398925368", itemName: "GIO Pillow S", quantity: 2 };
+    const result = compareOrders(
+      { storeName: "內湖東湖店", items: [item] },
+      { storeName: "內湖東湖店", items: [{ ...item }] }
+    );
+    expect(result.items[0]?.status).toBe("match");
+    expect(result.items[0]?.matchKeyType).toBe("barcode");
+    expect(result.overallStatus).toBe("all_match");
+  });
+
+  it("flags mismatch when quantities differ", () => {
+    const result = compareOrders(
+      { storeName: "內湖東湖店", items: [{ seq: 1, itemNo: "", barcode: "8809398925368", itemName: "GIO Pillow S", quantity: 2 }] },
+      { storeName: "內湖東湖店", items: [{ seq: 1, itemNo: "", barcode: "8809398925368", itemName: "GIO Pillow S", quantity: 1 }] }
+    );
+    expect(result.items[0]?.status).toBe("mismatch");
+    expect(result.mismatchCount).toBe(1);
+  });
+
+  it("flags missing when item only in purchase", () => {
+    const result = compareOrders(
+      { storeName: "內湖東湖店", items: [{ seq: 1, itemNo: "", barcode: "8809398925368", itemName: "GIO Pillow S", quantity: 1 }] },
+      { storeName: "內湖東湖店", items: [] }
+    );
+    expect(result.items[0]?.status).toBe("missing");
+    expect(result.items[0]?.source).toBe("purchase_only");
+  });
+
+  it("flags missing when item only in shipment", () => {
+    const result = compareOrders(
+      { storeName: "內湖東湖店", items: [] },
+      { storeName: "內湖東湖店", items: [{ seq: 1, itemNo: "", barcode: "8809398925368", itemName: "GIO Pillow S", quantity: 1 }] }
+    );
+    expect(result.items[0]?.status).toBe("missing");
+    expect(result.items[0]?.source).toBe("shipment_only");
+  });
+
+  it("handles empty items gracefully", () => {
+    const result = compareOrders(
+      { storeName: "內湖東湖店", items: [] },
+      { storeName: "內湖東湖店", items: [] }
+    );
     expect(result.items).toHaveLength(0);
     expect(result.overallStatus).toBe("all_match");
   });
+});
 
-  it("should handle extra items in shipment (shipment_only)", () => {
-    const purchase = {
-      storeName: "K041 台北中華店",
-      items: [{ seq: 1, barcode: "8809398925368", itemName: "GIO 枕頭 S", quantity: 1 }],
-    };
-    const shipment = {
-      storeName: "卡多摩台北中華店",
-      items: [
-        { seq: 1, barcode: "8809398925368", itemName: "GIO 枕頭 S", quantity: 1 },
-        { seq: 6, barcode: "", itemName: "冰淇淋杯紙卡", quantity: 1 }, // no barcode, ignored
-      ],
-    };
-    const result = compareOrders(purchase, shipment);
-    // item without barcode is filtered out
+// ─── ItemNo fallback comparison tests ────────────────────────────────────────
+
+describe("compareOrders - itemNo fallback matching (無條碼改用貨號)", () => {
+  it("uses itemNo when barcode is empty", () => {
+    const result = compareOrders(
+      { storeName: "內湖東湖店", items: [{ seq: 1, itemNo: "GPSS-0351", barcode: "", itemName: "GIO Pillow S", quantity: 1 }] },
+      { storeName: "內湖東湖店", items: [{ seq: 1, itemNo: "GPSS-0351", barcode: "", itemName: "GIO Pillow S", quantity: 1 }] }
+    );
+    expect(result.items[0]?.matchKeyType).toBe("itemNo");
+    expect(result.items[0]?.status).toBe("match");
+    expect(result.overallStatus).toBe("all_match");
+  });
+
+  it("prefers barcode over itemNo when both exist", () => {
+    const result = compareOrders(
+      { storeName: "內湖東湖店", items: [{ seq: 1, itemNo: "GPSS-0351", barcode: "8809398925368", itemName: "GIO Pillow S", quantity: 1 }] },
+      { storeName: "內湖東湖店", items: [{ seq: 1, itemNo: "GPSS-0351", barcode: "8809398925368", itemName: "GIO Pillow S", quantity: 1 }] }
+    );
+    expect(result.items[0]?.matchKeyType).toBe("barcode");
+  });
+
+  it("detects mismatch via itemNo when quantities differ", () => {
+    const result = compareOrders(
+      { storeName: "內湖東湖店", items: [{ seq: 1, itemNo: "GPSS-0351", barcode: "", itemName: "GIO Pillow S", quantity: 2 }] },
+      { storeName: "內湖東湖店", items: [{ seq: 1, itemNo: "GPSS-0351", barcode: "", itemName: "GIO Pillow S", quantity: 1 }] }
+    );
+    expect(result.items[0]?.matchKeyType).toBe("itemNo");
+    expect(result.items[0]?.status).toBe("mismatch");
+    expect(result.mismatchCount).toBe(1);
+  });
+
+  it("treats items with no barcode AND no itemNo as unmatched (skipped)", () => {
+    const result = compareOrders(
+      { storeName: "內湖東湖店", items: [{ seq: 1, itemNo: "", barcode: "", itemName: "Unknown", quantity: 1 }] },
+      { storeName: "內湖東湖店", items: [] }
+    );
+    // Items with no key are skipped from comparison
+    expect(result.items).toHaveLength(0);
+  });
+
+  it("real-world: extra shipment item with no barcode/itemNo is ignored", () => {
+    const result = compareOrders(
+      { storeName: "台北中華店", items: [
+        { seq: 1, itemNo: "", barcode: "8809398925368", itemName: "GIO Pillow S", quantity: 1 },
+      ]},
+      { storeName: "台北中華店", items: [
+        { seq: 1, itemNo: "", barcode: "8809398925368", itemName: "GIO Pillow S", quantity: 1 },
+        { seq: 6, itemNo: "", barcode: "", itemName: "冰淇淋杯紙卡", quantity: 1 }, // no key, ignored
+      ]}
+    );
     expect(result.matchCount).toBe(1);
+    expect(result.missingCount).toBe(0);
+    expect(result.overallStatus).toBe("all_match");
   });
 });
 
@@ -170,15 +231,9 @@ describe("auth.logout", () => {
     const clearedCookies: Array<{ name: string; options: Record<string, unknown> }> = [];
     const ctx: TrpcContext = {
       user: {
-        id: 1,
-        openId: "test-user",
-        email: "test@example.com",
-        name: "Test User",
-        loginMethod: "manus",
-        role: "user",
-        createdAt: new Date(),
-        updatedAt: new Date(),
-        lastSignedIn: new Date(),
+        id: 1, openId: "test-user", email: "test@example.com",
+        name: "Test User", loginMethod: "manus", role: "user",
+        createdAt: new Date(), updatedAt: new Date(), lastSignedIn: new Date(),
       },
       req: { protocol: "https", headers: {} } as TrpcContext["req"],
       res: {

@@ -1,15 +1,14 @@
 import { useState, useRef, useCallback } from "react";
-import { useLocation } from "wouter";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import {
   Upload, Loader2, CheckCircle2, AlertTriangle, XCircle,
   Plus, Trash2, FileImage, ArrowRight, RotateCcw, Eye
 } from "lucide-react";
+import { useLocation } from "wouter";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -132,7 +131,7 @@ function UploadZone({
         ${isDragging ? "border-primary bg-primary/5" : "border-border hover:border-primary/50 hover:bg-white/2"}
         ${imageUrl ? "border-solid border-border/50" : ""}
       `}
-      style={{ minHeight: "200px" }}
+      style={{ minHeight: "180px" }}
       onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
       onDragLeave={() => setIsDragging(false)}
       onDrop={handleDrop}
@@ -153,7 +152,7 @@ function UploadZone({
       ) : null}
       {imageUrl ? (
         <div className="relative">
-          <img src={imageUrl} alt={label} className="w-full h-48 object-cover opacity-60" />
+          <img src={imageUrl} alt={label} className="w-full h-40 object-cover opacity-60" />
           <div className="absolute inset-0 flex flex-col items-center justify-center bg-background/60 backdrop-blur-sm">
             <FileImage className="h-6 w-6 text-primary mb-2" />
             <p className="text-xs text-muted-foreground">點擊重新上傳</p>
@@ -197,7 +196,7 @@ function OrderEditor({
 
   const updateItem = (idx: number, field: keyof OrderItem, value: string | number) => {
     const items = [...data.items];
-    items[idx] = { ...items[idx], [field]: value };
+    items[idx] = { ...items[idx], [field]: value } as OrderItem;
     onChange({ ...data, items });
   };
 
@@ -290,114 +289,97 @@ function ComparisonResult({
   recordId: number;
   onReset: () => void;
 }) {
-  const [, setLocation] = useLocation();
-
-  const overallIcon = summary.overallStatus === "all_match"
-    ? <CheckCircle2 className="h-6 w-6 text-emerald-400" />
-    : <AlertTriangle className="h-6 w-6 text-amber-400" />;
-
-  const overallLabel = summary.overallStatus === "all_match"
-    ? "所有品項完全一致" : "發現差異，請確認";
-
-  const overallBg = summary.overallStatus === "all_match"
-    ? "bg-emerald-500/10 border-emerald-500/20"
-    : "bg-amber-500/10 border-amber-500/20";
+  const [, navigate] = useLocation();
+  const isAllMatch = summary.overallStatus === "all_match";
 
   return (
-    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+    <div className="space-y-5">
       {/* Overall status banner */}
-      <div className={`rounded-xl border p-5 flex items-center gap-4 ${overallBg}`}>
-        {overallIcon}
-        <div className="flex-1">
-          <p className="font-semibold text-foreground">{overallLabel}</p>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            共 {summary.totalItems} 項 · 一致 {summary.matchCount} · 差異 {summary.mismatchCount} · 缺漏 {summary.missingCount}
-          </p>
-        </div>
-        <div className="flex gap-2">
-          <Button variant="outline" size="sm" onClick={onReset} className="gap-2 border-border">
-            <RotateCcw className="h-3.5 w-3.5" /> 重新比對
-          </Button>
-          <Button size="sm" onClick={() => setLocation(`/history/${recordId}`)} className="gap-2 bg-primary text-primary-foreground">
-            <Eye className="h-3.5 w-3.5" /> 查看詳情
-          </Button>
+      <div className={`rounded-xl border p-5 ${isAllMatch
+        ? "bg-emerald-500/8 border-emerald-500/25"
+        : "bg-amber-500/8 border-amber-500/25"
+      }`}>
+        <div className="flex items-start justify-between">
+          <div className="flex items-center gap-3">
+            {isAllMatch
+              ? <CheckCircle2 className="h-6 w-6 text-emerald-400 shrink-0" />
+              : <AlertTriangle className="h-6 w-6 text-amber-400 shrink-0" />
+            }
+            <div>
+              <p className={`text-base font-semibold ${isAllMatch ? "text-emerald-400" : "text-amber-400"}`}>
+                {isAllMatch ? "兩張訂單完全一致" : "發現差異，請確認"}
+              </p>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                共 {summary.totalItems} 項 ·
+                一致 {summary.matchCount} ·
+                差異 {summary.mismatchCount} ·
+                缺漏 {summary.missingCount}
+              </p>
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <Button variant="outline" size="sm" className="border-border gap-1.5 text-xs"
+              onClick={() => navigate(`/history/${recordId}`)}>
+              <Eye className="h-3.5 w-3.5" /> 查看詳情
+            </Button>
+            <Button variant="outline" size="sm" className="border-border gap-1.5 text-xs" onClick={onReset}>
+              <RotateCcw className="h-3.5 w-3.5" /> 重新比對
+            </Button>
+          </div>
         </div>
       </div>
 
       {/* Store name comparison */}
-      <div className="rounded-xl border border-border bg-card p-5">
-        <h3 className="text-sm font-semibold text-foreground mb-4 flex items-center gap-2">
-          <span className="h-1.5 w-1.5 rounded-full bg-primary inline-block"></span>
-          門市名稱比對
-        </h3>
-        <div className="grid grid-cols-2 gap-4 items-center">
-          <div className="rounded-lg bg-muted/50 p-3">
+      <div className="rounded-xl border border-border bg-card p-5 space-y-3">
+        <h3 className="text-sm font-semibold text-foreground">門市名稱比對</h3>
+        <div className="flex items-center gap-4">
+          <div className="flex-1 rounded-lg bg-blue-500/8 border border-blue-500/20 px-4 py-3">
             <p className="text-xs text-muted-foreground mb-1">採購單門市</p>
-            <p className="text-sm font-medium text-foreground">{summary.purchaseStoreName || "—"}</p>
+            <p className="text-sm font-medium text-foreground">{summary.purchaseStoreName || "（未填寫）"}</p>
           </div>
-          <div className="rounded-lg bg-muted/50 p-3">
-            <p className="text-xs text-muted-foreground mb-1">出貨單客戶</p>
-            <p className="text-sm font-medium text-foreground">{summary.shipmentCustomerName || "—"}</p>
-          </div>
-        </div>
-        <div className="mt-3 flex justify-center">
           <StatusBadge status={summary.storeNameMatch} />
+          <div className="flex-1 rounded-lg bg-violet-500/8 border border-violet-500/20 px-4 py-3">
+            <p className="text-xs text-muted-foreground mb-1">出貨單客戶</p>
+            <p className="text-sm font-medium text-foreground">{summary.shipmentCustomerName || "（未填寫）"}</p>
+          </div>
         </div>
       </div>
 
-      {/* Items comparison table */}
+      {/* Items comparison */}
       <div className="rounded-xl border border-border bg-card overflow-hidden">
         <div className="px-5 py-4 border-b border-border">
-          <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
-            <span className="h-1.5 w-1.5 rounded-full bg-primary inline-block"></span>
-            品項比對明細
-          </h3>
+          <h3 className="text-sm font-semibold text-foreground">品項比對明細</h3>
         </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-border bg-muted/30">
-                <th className="text-left px-5 py-3 text-xs font-medium text-muted-foreground">條碼</th>
-                <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground">品項名稱</th>
-                <th className="text-center px-4 py-3 text-xs font-medium text-muted-foreground">採購數量</th>
-                <th className="text-center px-4 py-3 text-xs font-medium text-muted-foreground">出貨數量</th>
-                <th className="text-center px-4 py-3 text-xs font-medium text-muted-foreground">比對結果</th>
-                <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground">說明</th>
-              </tr>
-            </thead>
-            <tbody>
-              {summary.items.map((item, idx) => (
-                <tr
-                  key={idx}
-                  className={`border-b border-border/50 transition-colors hover:bg-muted/20
-                    ${item.status === "mismatch" ? "bg-amber-500/5" : ""}
-                    ${item.status === "missing" ? "bg-red-500/5" : ""}
-                  `}
-                >
-                  <td className="px-5 py-3.5 font-mono text-xs text-muted-foreground">{item.barcode}</td>
-                  <td className="px-4 py-3.5 text-xs text-foreground max-w-48 truncate">{item.itemName}</td>
-                  <td className="px-4 py-3.5 text-center text-sm font-medium">
-                    {item.purchaseQty !== null ? (
-                      <span className={item.status === "mismatch" ? "text-amber-400" : "text-foreground"}>
-                        {item.purchaseQty}
-                      </span>
-                    ) : <span className="text-muted-foreground/40">—</span>}
-                  </td>
-                  <td className="px-4 py-3.5 text-center text-sm font-medium">
-                    {item.shipmentQty !== null ? (
-                      <span className={item.status === "mismatch" ? "text-amber-400" : "text-foreground"}>
-                        {item.shipmentQty}
-                      </span>
-                    ) : <span className="text-muted-foreground/40">—</span>}
-                  </td>
-                  <td className="px-4 py-3.5 text-center">
-                    <StatusBadge status={item.status} />
-                  </td>
-                  <td className="px-4 py-3.5 text-xs text-muted-foreground">{item.diffNote || "—"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="divide-y divide-border/50">
+          {summary.items.length === 0 ? (
+            <div className="px-5 py-8 text-center text-sm text-muted-foreground">無品項資料</div>
+          ) : summary.items.map((item, idx) => (
+            <div key={idx} className={`px-5 py-3.5 flex items-center gap-4 ${
+              item.status === "mismatch" ? "bg-amber-500/4" :
+              item.status === "missing" ? "bg-red-500/4" : ""
+            }`}>
+              <span className="text-xs text-muted-foreground w-5 text-center shrink-0">{idx + 1}</span>
+              <div className="flex-1 min-w-0">
+                <p className="text-xs font-mono text-muted-foreground">{item.barcode || "—"}</p>
+                <p className="text-sm text-foreground truncate">{item.itemName || "（未知品項）"}</p>
+              </div>
+              <div className="flex items-center gap-6 shrink-0">
+                <div className="text-center w-16">
+                  <p className="text-xs text-muted-foreground mb-0.5">採購數量</p>
+                  <p className="text-sm font-semibold text-blue-400">
+                    {item.purchaseQty !== null ? item.purchaseQty : "—"}
+                  </p>
+                </div>
+                <div className="text-center w-16">
+                  <p className="text-xs text-muted-foreground mb-0.5">出貨數量</p>
+                  <p className="text-sm font-semibold text-violet-400">
+                    {item.shipmentQty !== null ? item.shipmentQty : "—"}
+                  </p>
+                </div>
+                <StatusBadge status={item.status} />
+              </div>
+            </div>
+          ))}
         </div>
       </div>
     </div>
@@ -421,24 +403,18 @@ export default function NewComparison() {
   const handlePurchaseExtracted = (data: OrderData, url: string) => {
     setPurchaseData(data);
     setPurchaseImageUrl(url);
-    if (shipmentImageUrl) setStep("edit");
+    // Always move to edit step after extraction so user can review and compare
+    setStep("edit");
   };
 
   const handleShipmentExtracted = (data: OrderData, url: string) => {
     setShipmentData(data);
     setShipmentImageUrl(url);
-    if (purchaseImageUrl) setStep("edit");
+    // Always move to edit step after extraction so user can review and compare
+    setStep("edit");
   };
 
   const handleCompare = async () => {
-    if (!purchaseData.storeName && !purchaseData.orderNo) {
-      toast.error("請填寫採購單資訊");
-      return;
-    }
-    if (!shipmentData.storeName && !shipmentData.orderNo) {
-      toast.error("請填寫出貨單資訊");
-      return;
-    }
     try {
       const result = await compareMutation.mutateAsync({
         purchaseData,
@@ -463,40 +439,57 @@ export default function NewComparison() {
     setStep("upload");
   };
 
+  // Step indicator labels
+  const steps: { key: Step; label: string }[] = [
+    { key: "upload", label: "上傳圖片" },
+    { key: "edit", label: "確認資料" },
+    { key: "result", label: "比對結果" },
+  ];
+  const currentStepIndex = steps.findIndex(s => s.key === step);
+
   return (
     <div className="max-w-5xl mx-auto space-y-6">
       {/* Header */}
-      <div>
-        <h1 className="text-2xl font-bold text-foreground tracking-tight">新增比對</h1>
-        <p className="text-sm text-muted-foreground mt-1">上傳採購單與出貨單圖片，AI 自動擷取資訊並比對差異</p>
+      <div className="flex items-start justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-foreground tracking-tight">新增比對</h1>
+          <p className="text-sm text-muted-foreground mt-1">上傳採購單與出貨單圖片，AI 自動擷取資訊並比對差異</p>
+        </div>
+        {step !== "upload" && (
+          <Button variant="outline" size="sm" onClick={handleReset} className="border-border gap-1.5 text-xs">
+            <RotateCcw className="h-3.5 w-3.5" /> 重新開始
+          </Button>
+        )}
       </div>
 
       {/* Step indicator */}
-      {step !== "result" && (
-        <div className="flex items-center gap-3 text-xs">
-          {([
-            { key: "upload" as Step, label: "上傳圖片" },
-            { key: "edit" as Step, label: "確認資料" },
-            { key: "result" as Step, label: "比對結果" },
-          ] as const).map((s, i) => (
-            <div key={s.key} className="flex items-center gap-3">
-              <div className={`flex items-center gap-2 ${(step as string) === s.key ? "text-primary" : (step as string) === "result" || ((step as string) === "edit" && i === 0) ? "text-muted-foreground" : "text-muted-foreground/40"}`}>
-                <span className={`h-5 w-5 rounded-full flex items-center justify-center text-xs font-medium
-                  ${step === s.key ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}>
-                  {i + 1}
-                </span>
-                {s.label}
-              </div>
-              {i < 2 && <ArrowRight className="h-3 w-3 text-muted-foreground/30" />}
+      <div className="flex items-center gap-2 text-xs">
+        {steps.map((s, i) => (
+          <div key={s.key} className="flex items-center gap-2">
+            <div className={`flex items-center gap-2 transition-colors ${
+              i === currentStepIndex ? "text-primary font-medium" :
+              i < currentStepIndex ? "text-muted-foreground" : "text-muted-foreground/40"
+            }`}>
+              <span className={`h-5 w-5 rounded-full flex items-center justify-center text-xs font-semibold transition-colors ${
+                i === currentStepIndex ? "bg-primary text-primary-foreground" :
+                i < currentStepIndex ? "bg-muted text-muted-foreground" : "bg-muted/50 text-muted-foreground/40"
+              }`}>
+                {i < currentStepIndex ? <CheckCircle2 className="h-3 w-3" /> : i + 1}
+              </span>
+              {s.label}
             </div>
-          ))}
-        </div>
-      )}
+            {i < steps.length - 1 && (
+              <ArrowRight className={`h-3 w-3 ${i < currentStepIndex ? "text-muted-foreground" : "text-muted-foreground/25"}`} />
+            )}
+          </div>
+        ))}
+      </div>
 
-      {/* Step: Upload */}
+      {/* ── Step 1: Upload ── */}
       {step === "upload" && (
         <div className="space-y-6">
           <div className="grid grid-cols-2 gap-5">
+            {/* Purchase */}
             <div className="space-y-3">
               <h3 className="text-sm font-medium text-foreground flex items-center gap-2">
                 <span className="h-2 w-2 rounded-full bg-blue-400 inline-block"></span>
@@ -515,6 +508,7 @@ export default function NewComparison() {
                 </div>
               )}
             </div>
+            {/* Shipment */}
             <div className="space-y-3">
               <h3 className="text-sm font-medium text-foreground flex items-center gap-2">
                 <span className="h-2 w-2 rounded-full bg-violet-400 inline-block"></span>
@@ -541,6 +535,7 @@ export default function NewComparison() {
             <Separator className="flex-1 bg-border/50" />
           </div>
 
+          {/* Manual entry button */}
           <Button
             variant="outline"
             className="w-full border-border hover:border-primary/50 gap-2"
@@ -552,9 +547,53 @@ export default function NewComparison() {
         </div>
       )}
 
-      {/* Step: Edit */}
+      {/* ── Step 2: Edit & Compare ── */}
       {step === "edit" && (
         <div className="space-y-5">
+          {/* Upload more images if not yet done */}
+          {(!purchaseImageUrl || !shipmentImageUrl) && (
+            <div className="rounded-xl border border-dashed border-border bg-card/50 p-4">
+              <p className="text-xs text-muted-foreground mb-3 font-medium">
+                {!purchaseImageUrl && !shipmentImageUrl
+                  ? "尚未上傳任何圖片，您可以繼續上傳或直接手動填寫資料"
+                  : !purchaseImageUrl
+                  ? "採購單尚未上傳，可繼續上傳或手動填寫"
+                  : "出貨單尚未上傳，可繼續上傳或手動填寫"}
+              </p>
+              <div className="grid grid-cols-2 gap-4">
+                {!purchaseImageUrl && (
+                  <div className="space-y-2">
+                    <p className="text-xs text-blue-400 font-medium flex items-center gap-1.5">
+                      <span className="h-1.5 w-1.5 rounded-full bg-blue-400 inline-block"></span>採購單
+                    </p>
+                    <UploadZone
+                      label="上傳採購單圖片"
+                      orderType="purchase"
+                      onExtracted={(data, url) => { setPurchaseData(data); setPurchaseImageUrl(url); toast.success("採購單 OCR 擷取成功"); }}
+                      imageUrl={purchaseImageUrl}
+                      isLoading={false}
+                    />
+                  </div>
+                )}
+                {!shipmentImageUrl && (
+                  <div className="space-y-2">
+                    <p className="text-xs text-violet-400 font-medium flex items-center gap-1.5">
+                      <span className="h-1.5 w-1.5 rounded-full bg-violet-400 inline-block"></span>出貨單
+                    </p>
+                    <UploadZone
+                      label="上傳出貨單圖片"
+                      orderType="shipment"
+                      onExtracted={(data, url) => { setShipmentData(data); setShipmentImageUrl(url); toast.success("出貨單 OCR 擷取成功"); }}
+                      imageUrl={shipmentImageUrl}
+                      isLoading={false}
+                    />
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Order editors */}
           <div className="grid grid-cols-2 gap-5">
             <OrderEditor
               title="採購單資料"
@@ -569,14 +608,17 @@ export default function NewComparison() {
               accent="bg-violet-500/5"
             />
           </div>
-          <div className="flex justify-between">
+
+          {/* Action buttons */}
+          <div className="flex justify-between items-center pt-2">
             <Button variant="outline" onClick={() => setStep("upload")} className="border-border gap-2">
-              <RotateCcw className="h-4 w-4" /> 重新上傳
+              <RotateCcw className="h-4 w-4" /> 返回上傳
             </Button>
             <Button
               onClick={handleCompare}
               disabled={compareMutation.isPending}
-              className="bg-primary text-primary-foreground gap-2 px-8"
+              size="lg"
+              className="bg-primary text-primary-foreground gap-2 px-10 font-semibold"
             >
               {compareMutation.isPending ? (
                 <><Loader2 className="h-4 w-4 animate-spin" /> 比對中...</>
@@ -588,7 +630,7 @@ export default function NewComparison() {
         </div>
       )}
 
-      {/* Step: Result */}
+      {/* ── Step 3: Result ── */}
       {step === "result" && comparisonResult && (
         <ComparisonResult
           summary={comparisonResult.summary}

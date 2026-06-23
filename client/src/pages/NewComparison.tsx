@@ -80,34 +80,54 @@ function StatusBadge({ status }: { status: "match" | "mismatch" | "missing" }) {
 // ─── Upload Zone ──────────────────────────────────────────────────────────────
 
 function UploadZone({
-  label, orderType, onExtracted, imageUrl, isLoading
+  label, orderType, onExtracted, fileUrl, isLoading
 }: {
   label: string;
   orderType: "purchase" | "shipment";
-  onExtracted: (data: OrderData, imageUrl: string) => void;
-  imageUrl: string | null;
+  onExtracted: (data: OrderData, fileUrl: string) => void;
+  fileUrl: string | null;
   isLoading: boolean;
 }) {
   const [isDragging, setIsDragging] = useState(false);
+  const [uploadedFileName, setUploadedFileName] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
-  const extractMutation = trpc.comparison.extractFromImage.useMutation();
+  const extractImageMutation = trpc.comparison.extractFromImage.useMutation();
+  const extractExcelMutation = trpc.comparison.extractFromExcel.useMutation();
+
+  const isExcelFile = (file: File) =>
+    file.name.endsWith(".xlsx") || file.name.endsWith(".xls") ||
+    file.type === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" ||
+    file.type === "application/vnd.ms-excel";
 
   const processFile = useCallback(async (file: File) => {
-    if (!file.type.startsWith("image/")) { toast.error("請上傳圖片檔案"); return; }
-    if (file.size > 10 * 1024 * 1024) { toast.error("圖片大小不得超過 10MB"); return; }
+    if (file.size > 20 * 1024 * 1024) { toast.error("檔案大小不得超過 20MB"); return; }
     const reader = new FileReader();
     reader.onload = async (e) => {
       const base64 = (e.target?.result as string).split(",")[1];
       try {
-        const result = await extractMutation.mutateAsync({ imageBase64: base64, mimeType: file.type, orderType });
-        onExtracted(result.orderData as OrderData, result.imageUrl);
-        toast.success(`${label} OCR 擷取成功`);
+        if (isExcelFile(file)) {
+          const result = await extractExcelMutation.mutateAsync({
+            fileBase64: base64, fileName: file.name, orderType,
+          });
+          setUploadedFileName(file.name);
+          onExtracted(result.orderData as OrderData, result.fileUrl);
+          toast.success(`${label} Excel 解析成功`);
+        } else if (file.type.startsWith("image/")) {
+          const result = await extractImageMutation.mutateAsync({
+            imageBase64: base64, mimeType: file.type, orderType,
+          });
+          setUploadedFileName(null);
+          onExtracted(result.orderData as OrderData, result.imageUrl);
+          toast.success(`${label} OCR 擷取成功`);
+        } else {
+          toast.error("請上傳圖片（JPG/PNG）或 Excel 檔案（.xlsx）");
+        }
       } catch (err: unknown) {
-        toast.error(err instanceof Error ? err.message : "OCR 解析失敗");
+        toast.error(err instanceof Error ? err.message : "解析失敗");
       }
     };
     reader.readAsDataURL(file);
-  }, [extractMutation, label, onExtracted, orderType]);
+  }, [extractImageMutation, extractExcelMutation, label, onExtracted, orderType]);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault(); setIsDragging(false);
@@ -115,35 +135,51 @@ function UploadZone({
     if (file) processFile(file);
   }, [processFile]);
 
-  const isProcessing = extractMutation.isPending || isLoading;
+  const isProcessing = extractImageMutation.isPending || extractExcelMutation.isPending || isLoading;
+  const isExcelUploaded = uploadedFileName !== null && fileUrl !== null;
 
   return (
     <div
       className={`relative rounded-xl border-2 border-dashed transition-all duration-300 cursor-pointer overflow-hidden
         ${isDragging ? "border-primary bg-primary/5" : "border-border hover:border-primary/50 hover:bg-white/2"}
-        ${imageUrl ? "border-solid border-border/50" : ""}`}
+        ${fileUrl ? "border-solid border-border/50" : ""}`}
       style={{ minHeight: "180px" }}
       onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
       onDragLeave={() => setIsDragging(false)}
       onDrop={handleDrop}
       onClick={() => !isProcessing && fileRef.current?.click()}
     >
-      <input ref={fileRef} type="file" accept="image/*" className="hidden"
+      <input ref={fileRef} type="file" accept="image/*,.xlsx,.xls" className="hidden"
         onChange={(e) => { const f = e.target.files?.[0]; if (f) processFile(f); e.target.value = ""; }} />
       {isProcessing && (
         <div className="absolute inset-0 flex flex-col items-center justify-center bg-background/80 backdrop-blur-sm z-10">
           <Loader2 className="h-8 w-8 text-primary animate-spin mb-3" />
-          <p className="text-sm text-muted-foreground">AI 正在解析圖片...</p>
+          <p className="text-sm text-muted-foreground">
+            {isExcelUploaded ? "Excel 解析中..." : "AI 正在解析圖片..."}
+          </p>
         </div>
       )}
-      {imageUrl ? (
-        <div className="relative">
-          <img src={imageUrl} alt={label} className="w-full h-40 object-cover opacity-60" />
-          <div className="absolute inset-0 flex flex-col items-center justify-center bg-background/60 backdrop-blur-sm">
-            <FileImage className="h-6 w-6 text-primary mb-2" />
-            <p className="text-xs text-muted-foreground">點擊重新上傳</p>
+      {fileUrl ? (
+        isExcelUploaded ? (
+          <div className="flex flex-col items-center justify-center p-8 gap-3">
+            <div className="h-12 w-12 rounded-full bg-emerald-500/15 flex items-center justify-center">
+              <CheckCircle2 className="h-6 w-6 text-emerald-400" />
+            </div>
+            <div className="text-center">
+              <p className="text-xs font-medium text-emerald-400">Excel 解析完成</p>
+              <p className="text-xs text-muted-foreground mt-1 font-mono truncate max-w-[160px]">{uploadedFileName}</p>
+              <p className="text-xs text-muted-foreground/60 mt-1">點擊重新上傳</p>
+            </div>
           </div>
-        </div>
+        ) : (
+          <div className="relative">
+            <img src={fileUrl} alt={label} className="w-full h-40 object-cover opacity-60" />
+            <div className="absolute inset-0 flex flex-col items-center justify-center bg-background/60 backdrop-blur-sm">
+              <FileImage className="h-6 w-6 text-primary mb-2" />
+              <p className="text-xs text-muted-foreground">點擊重新上傳</p>
+            </div>
+          </div>
+        )
       ) : (
         <div className="flex flex-col items-center justify-center p-8 gap-3">
           <div className="h-12 w-12 rounded-full bg-primary/10 flex items-center justify-center">
@@ -151,7 +187,8 @@ function UploadZone({
           </div>
           <div className="text-center">
             <p className="text-sm font-medium text-foreground">{label}</p>
-            <p className="text-xs text-muted-foreground mt-1">拖曳或點擊上傳圖片，AI 自動擷取資訊</p>
+            <p className="text-xs text-muted-foreground mt-1">圖片（JPG/PNG）或 Excel（.xlsx）</p>
+            <p className="text-xs text-muted-foreground/50 mt-0.5">拖曳或點擊上傳，AI 自動擷取資訊</p>
           </div>
         </div>
       )}
@@ -362,17 +399,17 @@ export default function NewComparison() {
   const [step, setStep] = useState<Step>("upload");
   const [purchaseData, setPurchaseData] = useState<OrderData>(emptyOrder());
   const [shipmentData, setShipmentData] = useState<OrderData>(emptyOrder());
-  const [purchaseImageUrl, setPurchaseImageUrl] = useState<string | null>(null);
-  const [shipmentImageUrl, setShipmentImageUrl] = useState<string | null>(null);
+  const [purchaseFileUrl, setPurchaseFileUrl] = useState<string | null>(null);
+  const [shipmentFileUrl, setShipmentFileUrl] = useState<string | null>(null);
   const [comparisonResult, setComparisonResult] = useState<{ summary: ComparisonSummary; recordId: number } | null>(null);
 
   const compareMutation = trpc.comparison.compare.useMutation();
 
   const handlePurchaseExtracted = (data: OrderData, url: string) => {
-    setPurchaseData(data); setPurchaseImageUrl(url); setStep("edit");
+    setPurchaseData(data); setPurchaseFileUrl(url); setStep("edit");
   };
   const handleShipmentExtracted = (data: OrderData, url: string) => {
-    setShipmentData(data); setShipmentImageUrl(url); setStep("edit");
+    setShipmentData(data); setShipmentFileUrl(url); setStep("edit");
   };
 
   const handleCompare = async () => {
@@ -380,8 +417,8 @@ export default function NewComparison() {
       const result = await compareMutation.mutateAsync({
         purchaseData,
         shipmentData,
-        purchaseImageUrl: purchaseImageUrl ?? undefined,
-        shipmentImageUrl: shipmentImageUrl ?? undefined,
+        purchaseImageUrl: purchaseFileUrl ?? undefined,
+        shipmentImageUrl: shipmentFileUrl ?? undefined,
       });
       setComparisonResult({ summary: result.summary as ComparisonSummary, recordId: result.recordId });
       setStep("result");
@@ -392,7 +429,7 @@ export default function NewComparison() {
 
   const handleReset = () => {
     setPurchaseData(emptyOrder()); setShipmentData(emptyOrder());
-    setPurchaseImageUrl(null); setShipmentImageUrl(null);
+    setPurchaseFileUrl(null); setShipmentFileUrl(null);
     setComparisonResult(null); setStep("upload");
   };
 
@@ -447,9 +484,9 @@ export default function NewComparison() {
               <h3 className="text-sm font-medium text-foreground flex items-center gap-2">
                 <span className="h-2 w-2 rounded-full bg-blue-400 inline-block"></span>採購單
               </h3>
-              <UploadZone label="上傳採購單圖片" orderType="purchase"
-                onExtracted={handlePurchaseExtracted} imageUrl={purchaseImageUrl} isLoading={false} />
-              {purchaseImageUrl && (
+              <UploadZone label="上傳採購單" orderType="purchase"
+                onExtracted={handlePurchaseExtracted} fileUrl={purchaseFileUrl} isLoading={false} />
+              {purchaseFileUrl && (
                 <div className="flex items-center gap-2 text-xs text-emerald-400">
                   <CheckCircle2 className="h-3.5 w-3.5" /> 採購單已擷取
                 </div>
@@ -459,9 +496,9 @@ export default function NewComparison() {
               <h3 className="text-sm font-medium text-foreground flex items-center gap-2">
                 <span className="h-2 w-2 rounded-full bg-violet-400 inline-block"></span>出貨單
               </h3>
-              <UploadZone label="上傳出貨單圖片" orderType="shipment"
-                onExtracted={handleShipmentExtracted} imageUrl={shipmentImageUrl} isLoading={false} />
-              {shipmentImageUrl && (
+              <UploadZone label="上傳出貨單" orderType="shipment"
+                onExtracted={handleShipmentExtracted} fileUrl={shipmentFileUrl} isLoading={false} />
+              {shipmentFileUrl && (
                 <div className="flex items-center gap-2 text-xs text-emerald-400">
                   <CheckCircle2 className="h-3.5 w-3.5" /> 出貨單已擷取
                 </div>
@@ -484,33 +521,33 @@ export default function NewComparison() {
       {step === "edit" && (
         <div className="space-y-5">
           {/* Supplemental upload if not both uploaded */}
-          {(!purchaseImageUrl || !shipmentImageUrl) && (
+          {(!purchaseFileUrl || !shipmentFileUrl) && (
             <div className="rounded-xl border border-dashed border-border bg-card/50 p-4">
               <p className="text-xs text-muted-foreground mb-3 font-medium">
-                {!purchaseImageUrl && !shipmentImageUrl
-                  ? "尚未上傳任何圖片，您可以繼續上傳或直接手動填寫資料"
-                  : !purchaseImageUrl ? "採購單尚未上傳，可繼續上傳或手動填寫"
+                {!purchaseFileUrl && !shipmentFileUrl
+                  ? "尚未上傳任何檔案，您可以繼續上傳或直接手動填寫資料"
+                  : !purchaseFileUrl ? "採購單尚未上傳，可繼續上傳或手動填寫"
                   : "出貨單尚未上傳，可繼續上傳或手動填寫"}
               </p>
               <div className="grid grid-cols-2 gap-4">
-                {!purchaseImageUrl && (
+                {!purchaseFileUrl && (
                   <div className="space-y-2">
                     <p className="text-xs text-blue-400 font-medium flex items-center gap-1.5">
                       <span className="h-1.5 w-1.5 rounded-full bg-blue-400 inline-block"></span>採購單
                     </p>
-                    <UploadZone label="上傳採購單圖片" orderType="purchase"
-                      onExtracted={(data, url) => { setPurchaseData(data as OrderData); setPurchaseImageUrl(url); toast.success("採購單 OCR 擷取成功"); }}
-                      imageUrl={purchaseImageUrl} isLoading={false} />
+                    <UploadZone label="上傳採購單" orderType="purchase"
+                      onExtracted={(data, url) => { setPurchaseData(data as OrderData); setPurchaseFileUrl(url); }}
+                      fileUrl={purchaseFileUrl} isLoading={false} />
                   </div>
                 )}
-                {!shipmentImageUrl && (
+                {!shipmentFileUrl && (
                   <div className="space-y-2">
                     <p className="text-xs text-violet-400 font-medium flex items-center gap-1.5">
                       <span className="h-1.5 w-1.5 rounded-full bg-violet-400 inline-block"></span>出貨單
                     </p>
-                    <UploadZone label="上傳出貨單圖片" orderType="shipment"
-                      onExtracted={(data, url) => { setShipmentData(data as OrderData); setShipmentImageUrl(url); toast.success("出貨單 OCR 擷取成功"); }}
-                      imageUrl={shipmentImageUrl} isLoading={false} />
+                    <UploadZone label="上傳出貨單" orderType="shipment"
+                      onExtracted={(data, url) => { setShipmentData(data as OrderData); setShipmentFileUrl(url); }}
+                      fileUrl={shipmentFileUrl} isLoading={false} />
                   </div>
                 )}
               </div>

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import * as XLSX from "xlsx";
 import { COOKIE_NAME } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
@@ -55,12 +56,67 @@ export interface ComparisonSummary {
   missingCount: number;
 }
 
+// ─── Excel Parser ────────────────────────────────────────────────────────────
+
+/**
+ * 解析蜜比出貨單 Excel 格式
+ * 欄位順序：品牌 | 品類 | 品項 | 貨號 | 條碼 | 數量 | 進貨單價 | 小計
+ * Row 1: 標題列（蜜比有限公司 出貨單）
+ * Row 2: 訂單資訊（訂單日期、訂單編號、店家名稱、通路商）
+ * Row 3: 欄位標題
+ * Row 4+: 品項資料（直到「合計」列）
+ */
+function extractOrderFromExcel(buffer: Buffer): OrderData {
+  const workbook = XLSX.read(buffer, { type: "buffer" });
+  const sheetName = workbook.SheetNames[0];
+  if (!sheetName) throw new Error("Excel 檔案無工作表");
+  const ws = workbook.Sheets[sheetName];
+  const rows: unknown[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" }) as unknown[][];
+
+  // 從 Row 2 解析訂單資訊（index 1）
+  const infoRow = String(rows[1]?.[0] ?? "");
+  let orderNo = "";
+  let storeName = "";
+
+  // 解析格式：「訂單日期：...　訂單編號：ORD-xxx　店家名稱：xxx　通路商：xxx」
+  const orderNoMatch = infoRow.match(/訂單編號[：:](\S+)/);
+  const storeNameMatch = infoRow.match(/店家名稱[：:]([^\s　]+)/);
+  if (orderNoMatch) orderNo = orderNoMatch[1].trim();
+  if (storeNameMatch) storeName = storeNameMatch[1].trim();
+
+  // 從 Row 4 開始解析品項（index 3），遇到「合計」列停止
+  const items: OrderItem[] = [];
+  let seq = 1;
+  for (let i = 3; i < rows.length; i++) {
+    const row = rows[i] as unknown[];
+    const firstCell = String(row[0] ?? "").trim();
+    if (firstCell === "合計" || firstCell === "") continue;
+
+    // 欄位：品牌(0) | 品類(1) | 品項(2) | 貨號(3) | 條碼(4) | 數量(5)
+    const itemNo = String(row[3] ?? "").trim();
+    const rawBarcode = String(row[4] ?? "").trim();
+    // 條碼可能是浮點數字串（如 "8809398927997.0"），需轉為整數字串
+    const barcode = rawBarcode ? String(Math.round(Number(rawBarcode))) : "";
+    const brandName = String(row[0] ?? "").trim();
+    const category = String(row[1] ?? "").trim();
+    const variant = String(row[2] ?? "").trim();
+    const itemName = [brandName, category, variant].filter(Boolean).join(" ");
+    const quantity = Number(row[5] ?? 0);
+
+    if (!itemNo && !barcode && !itemName) continue;
+
+    items.push({ seq: seq++, itemNo, barcode, itemName, quantity });
+  }
+
+  return { orderNo, storeName, items };
+}
+
 // ─── OCR Helper ───────────────────────────────────────────────────────────────
 
 async function extractOrderFromImage(imageUrl: string, orderType: "purchase" | "shipment"): Promise<OrderData> {
   const systemPrompt = orderType === "purchase"
-    ? `你是一個專業的採購單 OCR 解析助手。請從圖片中擷取採購單資訊，包含：採購單編號、門市名稱、以及所有品項（貨號、條碼、品項名稱、數量）。`
-    : `你是一個專業的出貨單 OCR 解析助手。請從圖片中擷取出貨單資訊，包含：銷貨單號、客戶名稱、以及所有品項（貨號、國際條碼、品名規格、數量）。`;
+    ? `你是一個專業的採購單 OCR 解析助手。請從圖片中擷取採購單資訊，包含：採購單編號、門市名稱、以及所有品項（貨號、條碼、品項名稱、數量）。支援格式包含一般採購單與愛吾兒等通路商格式。`
+    : `你是一個專業的出貨單 OCR 解析助手。請從圖片中擷取出貨單資訊，包含：銷貨單號、客戶名稱、以及所有品項（貨號、國際條碼、品名規格、數量）。支援蜜比有限公司出貨單格式，客戶名稱可能包含「愛吾兒」、「卡多摩」等通路商名稱。`;
 
   const response = await invokeLLM({
     messages: [
@@ -316,6 +372,24 @@ export const appRouter = router({
         const { url } = await storagePut(fileKey, buffer, input.mimeType);
         const orderData = await extractOrderFromImage(url, input.orderType);
         return { orderData, imageUrl: url };
+      }),
+
+    /**
+     * 上傳 Excel 檔案並解析訂單資訊（支援蜜比出貨單 xlsx 格式）
+     */
+    extractFromExcel: publicProcedure
+      .input(z.object({
+        fileBase64: z.string(),
+        fileName: z.string(),
+        orderType: z.enum(["purchase", "shipment"]),
+      }))
+      .mutation(async ({ input }) => {
+        const buffer = Buffer.from(input.fileBase64, "base64");
+        // 上傳至 S3 保存原始檔案
+        const fileKey = `orders/${input.orderType}-${Date.now()}.xlsx`;
+        const { url } = await storagePut(fileKey, buffer, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        const orderData = extractOrderFromExcel(buffer);
+        return { orderData, fileUrl: url };
       }),
 
     /**

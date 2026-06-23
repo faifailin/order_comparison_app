@@ -52,11 +52,13 @@ export default function DashboardLayout({
     localStorage.setItem(SIDEBAR_WIDTH_KEY, sidebarWidth.toString());
   }, [sidebarWidth]);
 
+  const isOAuthConfigured = !!import.meta.env.VITE_OAUTH_PORTAL_URL;
+
   if (loading) {
     return <DashboardLayoutSkeleton />
   }
 
-  if (!user) {
+  if (!user && isOAuthConfigured) {
     return (
       <div className="flex items-center justify-center min-h-screen">
         <div className="flex flex-col items-center gap-8 p-8 max-w-md w-full">

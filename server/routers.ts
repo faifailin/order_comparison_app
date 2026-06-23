@@ -113,10 +113,12 @@ function extractOrderFromExcel(buffer: Buffer): OrderData {
 
 // ─── OCR Helper ───────────────────────────────────────────────────────────────
 
-async function extractOrderFromImage(imageUrl: string, orderType: "purchase" | "shipment"): Promise<OrderData> {
+async function extractOrderFromImage(imageBase64: string, mimeType: string, orderType: "purchase" | "shipment"): Promise<OrderData> {
   const systemPrompt = orderType === "purchase"
     ? `你是一個專業的採購單 OCR 解析助手。請從圖片中擷取採購單資訊，包含：採購單編號、門市名稱、以及所有品項（貨號、條碼、品項名稱、數量）。支援格式包含一般採購單與愛吾兒等通路商格式。`
     : `你是一個專業的出貨單 OCR 解析助手。請從圖片中擷取出貨單資訊，包含：銷貨單號、客戶名稱、以及所有品項（貨號、國際條碼、品名規格、數量）。支援蜜比有限公司出貨單格式，客戶名稱可能包含「愛吾兒」、「卡多摩」等通路商名稱。`;
+
+  const dataUrl = `data:${mimeType};base64,${imageBase64}`;
 
   const response = await invokeLLM({
     messages: [
@@ -126,7 +128,7 @@ async function extractOrderFromImage(imageUrl: string, orderType: "purchase" | "
         content: ([
           {
             type: "image_url",
-            image_url: { url: imageUrl, detail: "high" },
+            image_url: { url: dataUrl, detail: "high" },
           },
           {
             type: "text",
@@ -369,8 +371,10 @@ export const appRouter = router({
         const buffer = Buffer.from(input.imageBase64, "base64");
         const ext = input.mimeType.includes("png") ? "png" : "jpg";
         const fileKey = `orders/${input.orderType}-${Date.now()}.${ext}`;
+        // OCR uses base64 directly — no public URL needed
+        const orderData = await extractOrderFromImage(input.imageBase64, input.mimeType, input.orderType);
+        // Store file locally for record-keeping
         const { url } = await storagePut(fileKey, buffer, input.mimeType);
-        const orderData = await extractOrderFromImage(url, input.orderType);
         return { orderData, imageUrl: url };
       }),
 

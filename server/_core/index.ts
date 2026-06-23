@@ -2,11 +2,17 @@ import "dotenv/config";
 import express from "express";
 import { createServer } from "http";
 import net from "net";
+import path from "path";
+import fs from "fs";
+import mysql from "mysql2/promise";
+import { drizzle } from "drizzle-orm/mysql2";
+import { migrate } from "drizzle-orm/mysql2/migrator";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { registerOAuthRoutes } from "./oauth";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
+import { ENV } from "./env";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -27,12 +33,39 @@ async function findAvailablePort(startPort: number = 3000): Promise<number> {
   throw new Error(`No available port found starting from ${startPort}`);
 }
 
+async function runMigrations() {
+  if (!process.env.DATABASE_URL) {
+    console.warn("[Database] DATABASE_URL not set, skipping migrations");
+    return;
+  }
+  try {
+    const conn = await mysql.createConnection(process.env.DATABASE_URL);
+    const db = drizzle(conn);
+    const migrationsFolder = path.resolve("./drizzle");
+    await migrate(db, { migrationsFolder });
+    await conn.end();
+    console.log("[Database] Migrations complete");
+  } catch (err) {
+    console.error("[Database] Migration error:", err);
+  }
+}
+
 async function startServer() {
+  await runMigrations();
+
   const app = express();
   const server = createServer(app);
   // Configure body parser with larger size limit for file uploads
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
+
+  // Serve uploaded files from the storage directory
+  const uploadsDir = path.resolve(ENV.storageDir);
+  if (!fs.existsSync(uploadsDir)) {
+    fs.mkdirSync(uploadsDir, { recursive: true });
+  }
+  app.use("/uploads", express.static(uploadsDir));
+
   // OAuth callback under /api/oauth/callback
   registerOAuthRoutes(app);
   // tRPC API
